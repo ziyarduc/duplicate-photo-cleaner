@@ -1,0 +1,23 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+*.log
+
+## OS
+Thumbs.db
+.DS_Store
+
+## IDE
+.vs/
+.idea/
+*.iml
+
+## App data
+scan_cache.db
+*.db

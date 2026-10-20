@@ -1,0 +1,96 @@
+<Window x:Class="DuplicatePhotoCleaner.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        Title="Yinelenen Fotoğraf Temizleyici" Height="640" Width="1100"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}">
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 1. Kaynak -->
+        <GroupBox Header="1. Taranacak konum" Grid.Row="0" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal" Margin="4">
+                <TextBox Text="{Binding SelectedFolder}" Width="420" Margin="2" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                <Button Content="Gözat..." Command="{Binding BrowseFolderCommand}" Margin="2"/>
+                <CheckBox Content="Tüm sabit sürücüler" IsChecked="{Binding ScanAllDrives}" Margin="8,0,2,0" VerticalAlignment="Center"/>
+                <Button Content="Taramayı Başlat" Command="{Binding StartScanCommand}" Margin="12,2,2,2" FontWeight="Bold"/>
+                <Button Content="İptal" Command="{Binding CancelScanCommand}" Margin="2"/>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- 2. İlerleme -->
+        <DockPanel Grid.Row="1" Margin="0,0,0,8">
+            <ProgressBar Value="{Binding ProgressValue}" Maximum="{Binding ProgressMax}" Width="220" Height="16" DockPanel.Dock="Left" Margin="0,0,8,0"/>
+            <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" FontWeight="SemiBold"/>
+        </DockPanel>
+
+        <!-- 3. Sonuçlar -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <GroupBox Header="Yinelenen gruplar" Grid.Column="0" Margin="0,0,8,0">
+                <DataGrid ItemsSource="{Binding Groups}"
+                          SelectedItem="{Binding SelectedGroup}"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          SelectionMode="Single">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Tür" Binding="{Binding Kind}" Width="70"/>
+                        <DataGridTextColumn Header="Adet" Binding="{Binding Files.Count}" Width="45"/>
+                        <DataGridTextColumn Header="Tasarruf" Binding="{Binding WastedBytes}" Width="80"/>
+                        <DataGridTextColumn Header="Anahtar" Binding="{Binding DisplayKey}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </GroupBox>
+
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="150"/>
+                </Grid.RowDefinitions>
+                <GroupBox Header="Grup dosyaları (kopyalar seçili)" Grid.Row="0">
+                    <DataGrid ItemsSource="{Binding SelectedGroup.Files}"
+                              AutoGenerateColumns="False" CanUserAddRows="False">
+                        <DataGrid.Columns>
+                            <DataGridCheckBoxColumn Header="Koru" Binding="{Binding IsKept, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="45"/>
+                            <DataGridCheckBoxColumn Header="Sil" Binding="{Binding IsSelectedForDeletion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="40"/>
+                            <DataGridTextColumn Header="Ad" Binding="{Binding Name}" Width="140"/>
+                            <DataGridTextColumn Header="Boyut" Binding="{Binding Size}" Width="70"/>
+                            <DataGridTextColumn Header="Değiştirme" Binding="{Binding Modified}" Width="110"/>
+                            <DataGridTextColumn Header="Yol" Binding="{Binding Path}" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </GroupBox>
+                <GroupBox Header="Önizleme" Grid.Row="1" Margin="0,8,0,0">
+                    <Image Source="{Binding PreviewPath}" Stretch="Uniform" Margin="4"/>
+                </GroupBox>
+            </Grid>
+        </Grid>
+
+        <!-- 4. İşlemler -->
+        <GroupBox Header="2. İşlemler" Grid.Row="3" Margin="0,8,0,0">
+            <StackPanel Orientation="Horizontal" Margin="4">
+                <Button Content="Tüm kopyaları seç" Command="{Binding SelectAllDuplicatesCommand}" Margin="2"/>
+                <Button Content="Seçimi temizle" Command="{Binding ClearSelectionCommand}" Margin="2"/>
+                <Button Content="Seçilen kopyaları KALICI sil" Command="{Binding DeleteSelectedCommand}" Margin="12,2,2,2" FontWeight="Bold" Background="#FFD32F2F" Foreground="White"/>
+                <Separator Margin="8,0"/>
+                <CheckBox Content="Karantinaya taşı (silme yerine)" IsChecked="{Binding DeleteToQuarantine}" VerticalAlignment="Center" Margin="2"/>
+                <TextBox Text="{Binding QuarantinePath}" Width="180" Margin="2" VerticalContentAlignment="Center"/>
+                <Button Content="..." Command="{Binding BrowseQuarantineCommand}" Margin="2"/>
+                <Separator Margin="8,0"/>
+                <Button Content="CSV kaydet" Command="{Binding ExportCsvCommand}" Margin="2"/>
+            </StackPanel>
+        </GroupBox>
+    </Grid>
+</Window>
