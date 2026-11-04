@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -10,9 +11,16 @@ namespace DuplicatePhotoCleaner.Core;
 
 public class Scanner
 {
-    public static readonly string[] SystemDirs = new[]
+    // tam eşleşme yapılacak sistem kök dizinleri (prefix değil boundary kontrolü Enumerate içinde)
+    private static readonly string[] SystemRoots =
     {
         @"C:\Windows", @"C:\Program Files", @"C:\Program Files (x86)", @"C:\ProgramData"
+    };
+
+    // taramaya gerek olmayan çöp klasörler
+    private static readonly HashSet<string> JunkDirs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "$Recycle.Bin", "System Volume Information", "node_modules", ".git", ".svn", ".hg", "__pycache__"
     };
 
     public async Task<List<FileEntry>> ScanAsync(ScanOptions opts, IProgress<string>? progress, CancellationToken ct)
@@ -27,6 +35,7 @@ public class Scanner
                 if (!Directory.Exists(root)) continue;
                 Enumerate(root, opts, result, seen, progress, ct);
             }
+            ct.ThrowIfCancellationRequested();
         }, ct).ConfigureAwait(false);
 
         return result;
@@ -37,23 +46,19 @@ public class Scanner
         ct.ThrowIfCancellationRequested();
         try
         {
-            if (!opts.IncludeSystemDirs && IsSystemDir(dir)) return;
+            if (!IsSystemOrJunk(dir)) return;
 
             foreach (var file in Directory.EnumerateFiles(dir))
             {
                 ct.ThrowIfCancellationRequested();
-                if (!Matches(file, opts)) continue;
+                if (!Matches(Path.GetFileName(file), opts)) continue;
                 var fi = new FileInfo(file);
-                if (fi.Length < opts.MinSizeBytes) continue;
-                if (opts.MaxSizeBytes > 0 && fi.Length > opts.MaxSizeBytes) continue;
-                if (opts.FromDate.HasValue && fi.LastWriteTime < opts.FromDate.Value) continue;
-                if (opts.ToDate.HasValue && fi.LastWriteTime > opts.ToDate.Value) continue;
+                if (fi.Length == 0) continue;
                 if (!opts.IncludeHidden && (fi.Attributes & FileAttributes.Hidden) != 0) continue;
 
-                var key = fi.FullName.ToLowerInvariant();
-                if (!seen.Add(key)) continue;
+                if (!seen.Add(fi.FullName.ToLowerInvariant())) continue;
 
-                var entry = new FileEntry
+                result.Add(new FileEntry
                 {
                     Path = fi.FullName,
                     Name = fi.Name,
@@ -61,54 +66,71 @@ public class Scanner
                     Size = fi.Length,
                     Modified = fi.LastWriteTime,
                     Created = fi.CreationTime
-                };
-                lock (result) result.Add(entry);
+                });
             }
 
             foreach (var sub in Directory.EnumerateDirectories(dir))
             {
                 ct.ThrowIfCancellationRequested();
-                var name = Path.GetFileName(sub);
-                if (!opts.IncludeHidden && (new DirectoryInfo(sub).Attributes & FileAttributes.Hidden) != 0) continue;
-                if (name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase)) continue;
+                var attr = new FileInfo(sub).Attributes;
+                if (!opts.IncludeHidden && (attr & FileAttributes.Hidden) != 0) continue;
+                if ((attr & FileAttributes.ReparsePoint) != 0) continue; // junction/symlink döngüsü riski
+
+                ThrottledReport(progress, sub);
                 Enumerate(sub, opts, result, seen, progress, ct);
             }
         }
+        // yalnızca erişim/yol hatalarını yut; OperationCanceledException yukarı çıkmalı
         catch (UnauthorizedAccessException) { }
         catch (DirectoryNotFoundException) { }
         catch (IOException) { }
-        catch (Exception) { }
 
-        progress?.Report(dir);
+        ThrottledReport(progress, dir);
     }
 
-    private bool IsSystemDir(string dir)
+    // prefix değil segment-bazlı kontrol: "C:\WindowsFoo" sistem dizini sayılmaz
+    private static bool IsSystemOrJunk(string dir)
     {
-        foreach (var s in SystemDirs)
-            if (dir.StartsWith(s, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
-    }
+        var name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar));
+        if (JunkDirs.Contains(name)) return false;
 
-    private bool Matches(string path, ScanOptions opts)
-    {
-        var name = Path.GetFileName(path);
-        var ext = Path.GetExtension(name).ToLowerInvariant();
-        bool included = opts.IncludePatterns.Count == 0;
-        foreach (var pat in opts.IncludePatterns)
+        foreach (var s in SystemRoots)
         {
-            if (WildcardMatch(name, pat)) { included = true; break; }
+            if (string.Equals(dir, s, StringComparison.OrdinalIgnoreCase)) return false;
+            if (dir.StartsWith(s + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return false;
         }
-        if (!included) return false;
+        return true;
+    }
+
+    private static readonly string[] DefaultExcludes = { "thumbs.db", "desktop.ini" };
+
+    private static bool Matches(string name, ScanOptions opts)
+    {
+        if (DefaultExcludes.Contains(name.ToLowerInvariant())) return false;
         foreach (var pat in opts.ExcludePatterns)
             if (WildcardMatch(name, pat)) return false;
-        return true;
+        foreach (var pat in opts.IncludePatterns)
+            if (WildcardMatch(name, pat)) return true;
+        return opts.IncludePatterns.Count == 0;
     }
 
     private static bool WildcardMatch(string text, string pattern)
     {
-        // simple glob: * and ?
         var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
             .Replace("\\*", ".*").Replace("\\?", ".") + "$";
         return System.Text.RegularExpressions.Regex.IsMatch(text, regex, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    // UI flood engelleme: en fazla ~6 rapor/sn
+    private static long _lastReportTicks;
+    private static void ThrottledReport(IProgress<string>? progress, string dir)
+    {
+        if (progress == null) return;
+        var now = Stopwatch.GetTimestamp();
+        var last = Interlocked.Read(ref _lastReportTicks);
+        var elapsedMs = (now - last) * 1000d / Stopwatch.Frequency;
+        if (elapsedMs < 150) return;
+        Interlocked.Exchange(ref _lastReportTicks, now);
+        progress.Report(dir);
     }
 }

@@ -10,6 +10,10 @@ namespace DuplicatePhotoCleaner.Core;
 
 public class Deleter
 {
+    public static string DefaultQuarantinePath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DuplicatePhotoCleaner", "Quarantine");
+
     public void ApplyKeepRule(DuplicateGroup group, KeepRule rule)
     {
         foreach (var f in group.Files) { f.IsKept = false; f.IsSelectedForDeletion = true; }
@@ -18,9 +22,6 @@ public class Deleter
             KeepRule.Oldest => group.Files.OrderBy(f => f.Modified).First(),
             KeepRule.Newest => group.Files.OrderByDescending(f => f.Modified).First(),
             KeepRule.Largest => group.Files.OrderByDescending(f => f.Size).First(),
-            KeepRule.Smallest => group.Files.OrderBy(f => f.Size).First(),
-            KeepRule.ShortestPath => group.Files.OrderBy(f => f.Path.Length).First(),
-            KeepRule.First => group.Files.OrderBy(f => f.Path).First(),
             _ => group.Files.OrderBy(f => f.Path).First()
         };
         keeper.IsKept = true;
@@ -30,6 +31,9 @@ public class Deleter
     public async Task<DeleteResult> DeleteAsync(IEnumerable<FileEntry> toDelete, string? quarantineDir, IProgress<string>? progress, CancellationToken ct)
     {
         var res = new DeleteResult();
+        var qRoot = quarantineDir;
+        string? qSession = null;
+
         await Task.Run(() =>
         {
             foreach (var f in toDelete)
@@ -37,21 +41,22 @@ public class Deleter
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    if (!string.IsNullOrEmpty(quarantineDir))
+                    if (!string.IsNullOrWhiteSpace(qRoot))
                     {
-                        Directory.CreateDirectory(quarantineDir);
-                        var dest = Path.Combine(quarantineDir, Path.GetFileName(f.Path));
-                        // avoid collision
+                        // her silme oturumu için GUID alt klasörü: kaynak klasörle çakışma imkansız
+                        qSession ??= Path.Combine(qRoot, DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N")[..8]);
+                        Directory.CreateDirectory(qSession);
+
+                        var dest = Path.Combine(qSession, Path.GetFileName(f.Path));
                         if (File.Exists(dest))
-                        {
-                            var name = Path.GetFileNameWithoutExtension(dest);
-                            var ext = Path.GetExtension(dest);
-                            dest = Path.Combine(quarantineDir, $"{name}_{Guid.NewGuid():N}{ext}");
-                        }
+                            dest = Path.Combine(qSession, $"{Path.GetFileNameWithoutExtension(dest)}_{Guid.NewGuid():N}{Path.GetExtension(dest)}");
+
+                        ClearReadOnly(f.Path);
                         File.Move(f.Path, dest);
                     }
                     else
                     {
+                        ClearReadOnly(f.Path);
                         File.Delete(f.Path);
                     }
                     res.Deleted++;
@@ -66,6 +71,17 @@ public class Deleter
             }
         }, ct).ConfigureAwait(false);
         return res;
+    }
+
+    private static void ClearReadOnly(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (fi.IsReadOnly) fi.IsReadOnly = false;
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }
 

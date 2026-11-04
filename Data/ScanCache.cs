@@ -29,27 +29,35 @@ public class ScanCache
         cmd.ExecuteNonQuery();
     }
 
+    // tek sorguyla tüm cache'i belleğe yükle (O(N) sorgu yerine O(1) sorgu)
     public void Hydrate(List<FileEntry> files)
     {
         using var conn = new SqliteConnection($"Data Source={_dbPath}");
         conn.Open();
+        var map = new Dictionary<string, (long Size, long Mod, string? Hash, string? Ph, bool Fail)>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT Path,Size,Modified,ContentHash,PerceptualHash,DecodeFailed FROM Files";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var path = r.GetString(0);
+                map[path] = (
+                    r.GetInt64(1),
+                    r.GetInt64(2),
+                    r.IsDBNull(3) ? null : r.GetString(3),
+                    r.IsDBNull(4) ? null : r.GetString(4),
+                    r.GetInt32(5) == 1);
+            }
+        }
+
         foreach (var f in files)
         {
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT Size,Modified,ContentHash,PerceptualHash,DecodeFailed FROM Files WHERE Path=@p";
-            cmd.Parameters.AddWithValue("@p", f.Path);
-            using var r = cmd.ExecuteReader();
-            if (r.Read())
-            {
-                var size = r.GetInt64(0);
-                var mod = r.GetInt64(1);
-                if (size == f.Size && mod == f.Modified.Ticks)
-                {
-                    f.ContentHash = r.IsDBNull(2) ? null : r.GetString(2);
-                    f.PerceptualHash = r.IsDBNull(3) ? null : r.GetString(3);
-                    f.DecodeFailed = r.GetInt32(4) == 1;
-                }
-            }
+            if (!map.TryGetValue(f.Path, out var c)) continue;
+            if (c.Size != f.Size || c.Mod != f.Modified.Ticks) continue;
+            f.ContentHash = c.Hash;
+            f.PerceptualHash = c.Ph;
+            f.DecodeFailed = c.Fail;
         }
     }
 
@@ -58,20 +66,30 @@ public class ScanCache
         using var conn = new SqliteConnection($"Data Source={_dbPath}");
         conn.Open();
         using var tx = conn.BeginTransaction();
+
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = @"INSERT INTO Files(Path,Name,Size,Modified,ContentHash,PerceptualHash,DecodeFailed)
+            VALUES(@p,@n,@s,@m,@c,@ph,@d)
+            ON CONFLICT(Path) DO UPDATE SET Size=@s,Modified=@m,ContentHash=@c,PerceptualHash=@ph,DecodeFailed=@d;";
+        var p = cmd.Parameters;
+        p.Add("@p", SqliteType.Text);
+        p.Add("@n", SqliteType.Text);
+        p.Add("@s", SqliteType.Integer);
+        p.Add("@m", SqliteType.Integer);
+        p.Add("@c", SqliteType.Text);
+        p.Add("@ph", SqliteType.Text);
+        p.Add("@d", SqliteType.Integer);
+
         foreach (var f in files)
         {
-            using var cmd = conn.CreateCommand();
-            cmd.Transaction = tx;
-            cmd.CommandText = @"INSERT INTO Files(Path,Name,Size,Modified,ContentHash,PerceptualHash,DecodeFailed)
-                VALUES(@p,@n,@s,@m,@c,@ph,@d)
-                ON CONFLICT(Path) DO UPDATE SET Size=@s,Modified=@m,ContentHash=@c,PerceptualHash=@ph,DecodeFailed=@d;";
-            cmd.Parameters.AddWithValue("@p", f.Path);
-            cmd.Parameters.AddWithValue("@n", f.Name);
-            cmd.Parameters.AddWithValue("@s", f.Size);
-            cmd.Parameters.AddWithValue("@m", f.Modified.Ticks);
-            cmd.Parameters.AddWithValue("@c", (object?)f.ContentHash ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@ph", (object?)f.PerceptualHash ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@d", f.DecodeFailed ? 1 : 0);
+            p["@p"].Value = f.Path;
+            p["@n"].Value = f.Name;
+            p["@s"].Value = f.Size;
+            p["@m"].Value = f.Modified.Ticks;
+            p["@c"].Value = (object?)f.ContentHash ?? DBNull.Value;
+            p["@ph"].Value = (object?)f.PerceptualHash ?? DBNull.Value;
+            p["@d"].Value = f.DecodeFailed ? 1 : 0;
             cmd.ExecuteNonQuery();
         }
         tx.Commit();

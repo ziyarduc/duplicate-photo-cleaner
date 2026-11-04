@@ -12,7 +12,7 @@ public class Hasher
 {
     public async Task HashContentAsync(IEnumerable<FileEntry> files, int parallelism, IProgress<int>? progress, CancellationToken ct)
     {
-        var list = files is List<FileEntry> l ? l : new List<FileEntry>(files);
+        var list = files as IReadOnlyList<FileEntry> ?? new List<FileEntry>(files);
         int done = 0;
         var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, parallelism), CancellationToken = ct };
 
@@ -24,18 +24,15 @@ public class Hasher
                 try
                 {
                     using var fs = new FileStream(f.Path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
-                    using var sha = SHA256.Create();
-                    var hash = sha.ComputeHash(fs);
-                    f.ContentHash = Convert.ToHexString(hash).ToLowerInvariant();
+                    using var sha = SHA256.Create(); // SHA256 thread-safe değil, dosya başına instance
+                    f.ContentHash = Convert.ToHexString(sha.ComputeHash(fs)).ToLowerInvariant();
                 }
-                catch
-                {
-                    f.ContentHash = null;
-                }
+                catch (IOException) { f.ContentHash = null; }
+                catch (UnauthorizedAccessException) { f.ContentHash = null; }
                 finally
                 {
                     var d = Interlocked.Increment(ref done);
-                    progress?.Report(d);
+                    if (d % 16 == 0 || d == list.Count) progress?.Report(d);
                 }
             });
         }, ct).ConfigureAwait(false);

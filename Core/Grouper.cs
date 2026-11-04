@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
-using DuplicatePhotoCleaner.Imaging;
 using DuplicatePhotoCleaner.Models;
 
 namespace DuplicatePhotoCleaner.Core;
@@ -10,45 +10,26 @@ public class Grouper
 {
     public List<DuplicateGroup> GroupByName(IEnumerable<FileEntry> files)
     {
-        return files
-            .GroupBy(f => f.NameNoExt.ToLowerInvariant())
-            .Where(g => g.Count() > 1)
-            .Select((g, i) => new DuplicateGroup { Id = i, Kind = DuplicateKind.Name, Key = g.Key, Files = g.OrderBy(f => f.Path).ToList() })
-            .ToList();
+        return Group(files.Where(f => f.NameNoExt.Length > 0), f => f.NameNoExt.ToLowerInvariant(), DuplicateKind.Name);
     }
 
     public List<DuplicateGroup> GroupByContent(IEnumerable<FileEntry> files)
     {
-        return files.Where(f => f.ContentHash != null)
-            .GroupBy(f => f.ContentHash!)
-            .Where(g => g.Count() > 1)
-            .Select((g, i) => new DuplicateGroup { Id = i, Kind = DuplicateKind.Content, Key = g.Key, Files = g.OrderBy(f => f.Path).ToList() })
-            .ToList();
+        return Group(files.Where(f => f.ContentHash != null), f => f.ContentHash!, DuplicateKind.Content);
     }
 
-    public List<DuplicateGroup> GroupByPerceptual(IEnumerable<FileEntry> files, int threshold)
+    private static List<DuplicateGroup> Group(IEnumerable<FileEntry> files, Func<FileEntry, string> key, DuplicateKind kind)
     {
-        var list = files.Where(f => f.PerceptualHash != null).ToList();
-        int n = list.Count;
-        var parent = Enumerable.Range(0, n).ToArray();
-        Func<int, int> find = null!;
-        find = x => parent[x] == x ? x : (parent[x] = find(parent[x]));
-        for (int i = 0; i < n; i++)
-            for (int j = i + 1; j < n; j++)
-            {
-                var d = PerceptualHasher.HammingDistance(list[i].PerceptualHash, list[j].PerceptualHash);
-                if (d <= threshold)
-                {
-                    var ri = find(i); var rj = find(j);
-                    if (ri != rj) parent[ri] = rj;
-                }
-            }
-        var groups = list
-            .Select((f, i) => (f, root: find(i)))
-            .GroupBy(t => t.root)
+        return files
+            .GroupBy(key, StringComparer.Ordinal)
             .Where(g => g.Count() > 1)
-            .Select((g, i) => new DuplicateGroup { Id = i, Kind = DuplicateKind.Perceptual, Key = g.First().f.PerceptualHash!, Files = g.Select(t => t.f).OrderBy(f => f.Path).ToList() })
+            .Select((g, i) => new DuplicateGroup
+            {
+                Id = i,
+                Kind = kind,
+                Key = g.Key,
+                Files = new ObservableCollection<FileEntry>(g.OrderBy(f => f.Path))
+            })
             .ToList();
-        return groups;
     }
 }
